@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Ultimate Othello AI</title>
+
+<style>
+body{
+  margin:0;
+  background:beige;
+  color:black;
+  font-family:sans-serif;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+}
+
+h1{ margin:10px; }
+.panel{ margin:6px; }
+
+button,select{
+  padding:8px 14px;
+  font-size:16px;
+  border:none;
+  border-radius:6px;
+  cursor:pointer;
+}
+button:hover{ opacity:.85; }
+
+.board{
+  display:grid;
+  grid-template-columns:repeat(8,1fr);
+  grid-template-rows:repeat(8,1fr);   /* ★ iOS必須 */
+  gap:2px;
+  background:#003300;
+  padding:6px;
+
+  width:min(92vw,92vh);
+  aspect-ratio:1 / 1;
+
+  touch-action:manipulation;
+}
+
+.cell{
+  background:#008000;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  user-select:none;
+  -webkit-user-select:none;
+}
+.cell:hover{ background:#00aa00; }
+.cell:active{ background:#00cc00; }
+
+.stone{
+  width:80%;
+  height:80%;
+  border-radius:50%;
+  box-shadow:0 4px 10px rgba(0,0,0,.5);
+}
+.black{ background:black; }
+.white{ background:white; }
+
+.stone.new{
+  animation:pop .15s ease-out;
+}
+
+@keyframes pop{
+  from{ transform:scale(0); }
+  to{ transform:scale(1); }
+}
+
+*{
+  -webkit-tap-highlight-color:transparent;
+}
+</style>
+</head>
+
+<body>
+
+<h1>Ultimate Othello AI</h1>
+
+<div class="panel">
+  <button onclick="resetGame()">リセット</button>
+</div>
+
+<div class="panel">
+モード：
+<select id="mode">
+  <option value="depth" selected>先読みAI</option>
+  <option value="learn">学習AI</option>
+</select>
+</div>
+
+<div class="panel">
+先読み：
+<select id="depthSelect">
+  <option>1</option><option>2</option><option>3</option>
+  <option selected>4</option>
+  <option>5</option><option>6</option><option>7</option>
+</select>
+<span id="learnInfo" style="display:none;">（学習AIは自動）</span>
+</div>
+
+<div class="panel" id="score"></div>
+<div class="board" id="board"></div>
+<div class="panel" id="msg"></div>
+
+<script>
+const BLACK=1, WHITE=2;
+const dirs=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+const LEARN_DEPTH_KEY="othello_learn_depth";
+
+const boardEl=document.getElementById("board");
+const scoreEl=document.getElementById("score");
+const msgEl=document.getElementById("msg");
+const modeSel=document.getElementById("mode");
+const depthSel=document.getElementById("depthSelect");
+const learnInfo=document.getElementById("learnInfo");
+
+let board,current,lastMove,aiThinking=false;
+
+/* ===== 学習AI深さ ===== */
+
+function getLearnDepth(){
+  return Math.min(7, Math.max(2, Number(localStorage.getItem(LEARN_DEPTH_KEY))||2));
+}
+function setLearnDepth(d){
+  localStorage.setItem(LEARN_DEPTH_KEY,d);
+}
+
+/* ===== 初期化 ===== */
+
+resetGame();
+
+modeSel.onchange=()=>{
+  const learn = modeSel.value==="learn";
+  depthSel.disabled = learn;
+  learnInfo.style.display = learn?"inline":"none";
+};
+
+/* ===== 基本 ===== */
+
+function resetGame(){
+  board=Array.from({length:8},()=>Array(8).fill(0));
+  board[3][3]=WHITE; board[3][4]=BLACK;
+  board[4][3]=BLACK; board[4][4]=WHITE;
+  current=BLACK;
+  lastMove=null;
+  aiThinking=false;
+  msgEl.textContent="";
+  render();
+}
+
+function render(){
+  boardEl.innerHTML="";
+  let b=0,w=0;
+
+  for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+    const cell=document.createElement("div");
+    cell.className="cell";
+
+    cell.addEventListener("touchstart", e=>{
+      e.preventDefault();
+      playerMove(x,y);
+    }, { passive:false });
+
+    cell.addEventListener("click", e=>{
+      e.preventDefault();
+      playerMove(x,y);
+    });
+
+    const c=board[y][x];
+    if(c){
+      const s=document.createElement("div");
+      s.className="stone "+(c===BLACK?"black":"white");
+      if(lastMove &&
+        ((lastMove.x===x && lastMove.y===y) ||
+         lastMove.flips?.includes(x+","+y)))
+        s.classList.add("new");
+      cell.appendChild(s);
+      c===BLACK?b++:w++;
+    }
+    boardEl.appendChild(cell);
+  }
+  lastMove=null;
+  scoreEl.textContent=`黒 ${b} : 白 ${w}`;
+}
+
+/* ===== ロジック ===== */
+
+function flips(x,y,p,b=board){
+  if(b[y][x]) return [];
+  const e=p===BLACK?WHITE:BLACK;
+  let r=[];
+  for(const[dX,dY] of dirs){
+    let nx=x+dX, ny=y+dY, tmp=[];
+    while(nx>=0&&ny>=0&&nx<8&&ny<8&&b[ny][nx]===e){
+      tmp.push([nx,ny]); nx+=dX; ny+=dY;
+    }
+    if(nx>=0&&ny>=0&&nx<8&&ny<8&&b[ny][nx]===p)
+      r.push(...tmp);
+  }
+  return r;
+}
+
+function moves(p,b=board){
+  let m=[];
+  for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+    let f=flips(x,y,p,b);
+    if(f.length) m.push({x,y,f});
+  }
+  return m;
+}
+
+function simulate(b,m,p){
+  let nb=b.map(r=>r.slice());
+  nb[m.y][m.x]=p;
+  m.f.forEach(([x,y])=>nb[y][x]=p);
+  return nb;
+}
+
+/* ===== 評価 ===== */
+
+function evaluate(b){
+  let s=0;
+  for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+    if(b[y][x]===WHITE) s++;
+    if(b[y][x]===BLACK) s--;
+  }
+  return s;
+}
+
+/* ===== ミニマックス ===== */
+
+function minimax(b,d,a,beta,max){
+  if(d===0) return evaluate(b);
+  const p=max?WHITE:BLACK;
+  const m=moves(p,b);
+  if(!m.length) return evaluate(b);
+
+  if(max){
+    let v=-1e9;
+    for(const mv of m){
+      v=Math.max(v,minimax(simulate(b,mv,p),d-1,a,beta,false));
+      a=Math.max(a,v);
+      if(beta<=a) break;
+    }
+    return v;
+  }else{
+    let v=1e9;
+    for(const mv of m){
+      v=Math.min(v,minimax(simulate(b,mv,p),d-1,a,beta,true));
+      beta=Math.min(beta,v);
+      if(beta<=a) break;
+    }
+    return v;
+  }
+}
+
+function getAIDepth(){
+  return modeSel.value==="learn"
+    ? getLearnDepth()
+    : Number(depthSel.value);
+}
+
+function strongAI(){
+  const depth=getAIDepth();
+  let best=null,max=-1e9;
+  for(const m of moves(WHITE)){
+    let v=minimax(simulate(board,m,WHITE),depth,-1e9,1e9,false);
+    if(v>max){max=v;best=m;}
+  }
+  return best;
+}
+
+/* ===== 手番 ===== */
+
+function playerMove(x,y){
+  if(current!==BLACK||aiThinking) return;
+  const f=flips(x,y,BLACK);
+  if(!f.length) return;
+  lastMove={x,y,flips:f.map(v=>v[0]+","+v[1])};
+  board=simulate(board,{x,y,f},BLACK);
+  current=WHITE;
+  render();
+  setTimeout(aiMove,300);
+}
+
+function aiMove(){
+  aiThinking=true;
+  setTimeout(()=>{
+    const m=strongAI();
+    if(m){
+      lastMove={x:m.x,y:m.y,flips:m.f.map(v=>v[0]+","+v[1])};
+      board=simulate(board,m,WHITE);
+    }
+    current=BLACK;
+    aiThinking=false;
+    render();
+    checkEnd();
+  },400);
+}
+
+function checkEnd(){
+  if(!moves(BLACK).length && !moves(WHITE).length){
+    let b=0,w=0;
+    board.flat().forEach(c=>c===BLACK?b++:c===WHITE?w++:0);
+    msgEl.textContent=b>w?"黒の勝ち！":b<w?"白の勝ち！":"引き分け";
+
+    if(modeSel.value==="learn" && w>b){
+      setLearnDepth(getLearnDepth()+1);
+    }
+  }
+}
+</script>
+</body>
+</html>
